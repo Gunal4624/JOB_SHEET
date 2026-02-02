@@ -356,11 +356,24 @@ async function runScraper() {
     }
 }
 
+// --- Execution Logic ---
 console.log('Multi-Category Job Search Service Started.');
-console.log('Scheduling cron: "0 * * * *" (Every hour at minute 0)');
 
-runScraper();
-
-cron.schedule('0 * * * *', () => {
+if (process.env.CI === 'true') {
+    console.log('[Mode] CI Environment detected. Running once...');
+    runScraper().then(() => {
+        console.log('[Mode] Scrape complete. Exiting.');
+    }).catch(err => {
+        console.error('[Mode] Scrape failed:', err);
+        process.exit(1);
+    });
+} else {
+    console.log('[Mode] Local/Server Environment. Scheduling cron: "0 * * * *" (Every hour at minute 0)');
+    // Run immediately on start
     runScraper();
-});
+
+    // Schedule
+    cron.schedule('0 * * * *', () => {
+        runScraper();
+    });
+}

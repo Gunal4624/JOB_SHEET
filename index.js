@@ -18,7 +18,7 @@ const cron = require('node-cron');
 const { google } = require('googleapis');
 
 // --- Shared Configuration ---
-const LOCATIONS = ['Chennai', 'Bengaluru'];
+const LOCATIONS = ['Chennai', 'Bengaluru', 'Coimbatore', 'Hyderabad', 'Kerala', 'Remote', 'Hybrid'];
 const EXPERIENCE_PARAM = '2'; // approximates 2 years.
 const RESULTS_FILE = 'jobs.json';
 const SERVICE_ACCOUNT_FILE = 'service_account_credentials.json';
@@ -26,21 +26,16 @@ const SERVICE_ACCOUNT_FILE = 'service_account_credentials.json';
 // --- Category Configurations ---
 const CONFIGS = [
     {
-        category: 'Design',
-        sheetId: process.env.GOOGLE_SHEET_ID, // Original Sheet
-        roles: ['Product Designer', 'Product Design', 'UX Design', 'UX and UI Designer', 'UI/UX'],
-        uiFilter: 'UX, Design & Architecture', // Applies this Department filter
-        validateTitle: isValidDesignTitle
-    },
-    {
         category: 'Frontend',
-        sheetId: '1XG5qG4EJLLhWb7ODs2lPePnTkKtBM-T7K9R9J2zLzZ8', // New Developer Sheet
+        sheetId: process.env.GOOGLE_SHEET_ID, // Using same sheet for now
         roles: [
-            'Frontend Development', 'Frontend Web Developer', 'UI Development',
-            'Front End', 'Web Development', 'Front End Design',
-            'Web Designing', 'Responsive Web Design', 'Web Application Development'
+            'Frontend Developer', 'Front End Developer', 'React Frontend Developer', 'Angular UI Developer',
+            'JavaScript Front End', 'Junior Web Developer', 'Senior Web Developer', 'Web Developer',
+            'Frontend Engineer', 'React JS Developer', 'UI/UX Developer', 'UI UX Developer',
+            'UX/UI Developer', 'UI Developer', 'Frontend UI/UX Developer', 'User Interface Developer',
+            'User Experience Developer', 'UI/UX Designer Developer', 'UI/UX Design Consultant'
         ],
-        uiFilter: null, // No Department filter
+        uiFilter: null, // No UI filter for Frontend
         validateTitle: isValidDevTitle
     }
 ];
@@ -134,12 +129,16 @@ function isRecent(postedDateText) {
     if (!postedDateText) return false;
     const lower = postedDateText.toLowerCase();
 
-    // STRICT: Last 1 Hour + Today
+    // STRICT: Last 1 Day (Anything from "Just now" to "23 hours ago" + "Today")
     if (lower.includes('just now')) return true;
+    if (lower.includes('few hours')) return true; // Explicitly added as requested
     if (lower.includes('sec')) return true; // Covers "few seconds ago", "30 seconds ago", etc.
     if (lower.includes('min')) return true;
-    if (lower.includes('1 hour') || lower === '1 hour ago') return true;
+    if (lower.includes('hour')) return true; // Covers "1 hour ago", "12 hours ago", "23 hours ago" etc.
     if (lower.includes('today')) return true;
+
+    // Sometimes "1 day ago" might appear if it's right on the edge, usually safe to include for "Last 1 Day" logic
+    if (lower.includes('1 day')) return true;
 
     return false;
 }
@@ -173,7 +172,9 @@ function isValidDevTitle(title) {
 
     const validKeywords = [
         'frontend', 'front end', 'web develop', 'web design', 'ui develop',
-        'react', 'angular', 'vue', 'javascript', 'typescript', 'html', 'css'
+        'ui ux', 'ux ui', 'user interface', 'user experience', 'interaction design',
+        'responsive web design', 'front end design', 'sde', 'engineer',
+        'react', 'vue', 'javascript', 'typescript', 'html', 'css', 'angular'
     ];
 
     const excludedKeywords = [
@@ -185,6 +186,321 @@ function isValidDevTitle(title) {
     const hasExcluded = excludedKeywords.some(k => t.includes(k));
 
     return hasValid && !hasExcluded;
+    return hasValid && !hasExcluded;
+}
+
+function isValidLocation(location) {
+    if (!location) return false;
+    const loc = location.toLowerCase();
+
+    // Explicitly allowed - strict check if we want, but usually broad inclusion is safer,
+    // then strict exclusion of "bad" locations.
+    // However, if we see "San Francisco", we want to kill it.
+
+    const excludedLocations = [
+        'san francisco', 'usa', 'united states', 'uk', 'united kingdom', 'london',
+        'europe', 'germany', 'singapore', 'australia', 'canada', 'dubai', 'uae'
+    ];
+
+    const hasExcluded = excludedLocations.some(l => loc.includes(l));
+    if (hasExcluded) return false;
+
+    // Optional: Strictly require at least one allowed location from our LOCATIONS list?
+    // User asked "Location chennai... remote, hybrid. No others."
+    // So we SHOULD enforce one of our allowed locations is present.
+    // LOCATIONS are: ['Chennai', 'Bengaluru', 'Coimbatore', 'Hyderabad', 'Kerala', 'Remote', 'Hybrid']
+
+    // Check if the location string contains at least one of our target locations
+    const allowed = LOCATIONS.some(allowedLoc => loc.includes(allowedLoc.toLowerCase()));
+
+    return allowed;
+}
+
+// --- LinkedIn Scraper Logic ---
+async function scrapeLinkedIn(page, config, existingUrls, categoryJobs, existingJobs) {
+    console.log(`\n--- Processing LinkedIn for Category: ${config.category} ---`);
+
+    // LinkedIn Search URLs for "Product Designer" + "Past Week" (f_TPR=r604800)
+    // We will construct dynamic URLs or use fixed ones provided by user.
+    // User provided: "https://www.linkedin.com/jobs/search-results/?currentJobId=4328487238&keywords=product%20designer&origin=JOB_SEARCH_PAGE_JOB_FILTER&referralSearchId=wSQCgTzfk6RdpFt3xLuBoA%3D%3D&f_TPR=r604800"
+
+    // We'll iterate over roles but LinkedIn search is flexible. We can try a few specific searches.
+    // Simplified: Use one main search URL for Product Designer + Past Week + Location if possible.
+    // Since scraping search results is easier than constructing 100% correct URL params, we'll try a generic search pattern.
+
+    // Fixed Search URLs based on user request (Product Designer, Past Week)
+    // We can iterate locations.
+
+    for (const loc of LOCATIONS) {
+        for (const role of config.roles) {
+            // Basic rate limiting
+            await randomDelay(3000, 6000);
+
+            // Construct Search URL
+            // f_TPR=r604800 => Past Week
+            // geoId => 102713980 (India) - Forces India results
+            // location => Chennai, Bengaluru
+            const encodedRole = encodeURIComponent(role);
+            const encodedLoc = encodeURIComponent(loc);
+            const searchUrl = `https://www.linkedin.com/jobs/search?keywords=${encodedRole}&location=${encodedLoc}&geoId=102713980&f_TPR=r604800&position=1&pageNum=0`;
+
+            console.log(`[LinkedIn] Searching for "${role}" in "${loc}"...`);
+
+            try {
+                await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                await randomDelay(2000, 5000);
+
+                let pageCount = 0;
+                const MAX_PAGES = 5;
+
+                while (pageCount < MAX_PAGES) {
+                    pageCount++;
+                    console.log(`[LinkedIn] Scraping Page ${pageCount} for "${role}" in "${loc}"...`);
+
+                    // Auto-scroll to load more lazily loaded jobs
+                    await page.evaluate(async () => {
+                        const distance = 100;
+                        const delay = 100;
+                        const timer = setInterval(() => {
+                            window.scrollBy(0, distance);
+                            if (window.innerHeight + window.scrollY >= document.body.offsetHeight) {
+                                clearInterval(timer);
+                            }
+                        }, delay);
+                    });
+                    await randomDelay(2000, 3000);
+
+                    // Scrape Job Cards
+                    // Based on user provided HTML: class="_52d04d34" with data-view-name="job-search-job-card"
+                    // OR commonly: .job-search-card, ul.jobs-search__results-list li
+
+                    // We'll try a broad selector strategy as LinkedIn HTML classes are obfuscated/dynamic (e.g. "_52d04d34")
+                    // Reliable approach: search for the main list container or items
+
+                    const scrapedJobs = await page.evaluate(() => {
+                        const jobs = [];
+                        // Selector based on user snippet and common guest view
+                        // "job-search-job-card" seems to be a reliable data-attribute if available
+                        // Fallback to "li" inside "ul.jobs-search__results-list" for public guest view
+
+                        const cards = Array.from(document.querySelectorAll('div[data-view-name="job-search-job-card"], li .base-card'));
+
+                        cards.forEach(card => {
+                            try {
+                                // Title
+                                const titleEl = card.querySelector('.job-card-list__title, h3.base-search-card__title');
+                                const title = titleEl ? titleEl.innerText.trim() : 'N/A';
+
+                                // Link
+                                const linkEl = card.querySelector('a.job-card-list__title, a.base-card__full-link');
+                                const detailUrl = linkEl ? linkEl.href.split('?')[0] : null; // Clean URL
+
+                                // Company
+                                const companyEl = card.querySelector('.job-card-container__company-name, h4.base-search-card__subtitle');
+                                const company = companyEl ? companyEl.innerText.trim() : 'N/A';
+
+                                // Location
+                                const locEl = card.querySelector('.job-card-container__metadata-item, span.job-search-card__location');
+                                const location = locEl ? locEl.innerText.trim() : 'N/A';
+
+                                // Date / Posted
+                                const timeEl = card.querySelector('time');
+                                const postedDate = timeEl ? timeEl.innerText.trim() : 'N/A';
+
+                                if (detailUrl && title !== 'N/A') {
+                                    jobs.push({
+                                        title,
+                                        detailUrl,
+                                        company,
+                                        location,
+                                        postedDate,
+                                        experience: 'N/A', // LinkedIn often hides this in details
+                                        platform: 'LinkedIn'
+                                    });
+                                }
+                            } catch (err) { }
+                        });
+                        return jobs;
+                    });
+
+                    console.log(`[LinkedIn] Found ${scrapedJobs.length} raw jobs on page ${pageCount}.`);
+
+                    for (const job of scrapedJobs) {
+                        if (existingUrls.has(job.detailUrl)) continue;
+
+                        // Title Validation (reuse existing function)
+                        if (!config.validateTitle(job.title)) continue;
+
+                        // Location Validation
+                        if (!isValidLocation(job.location)) continue;
+
+                        // Freshness?
+                        // We already used URL param f_TPR=r604800 (Past Week). 
+                        // Verify if "hours" keyword needs to be checked? 
+                        // User said: "add few keywords also like few hours ago".
+                        // LinkedIn postedDate is often "2 days ago", "1 week ago", "5 hours ago".
+
+                        // We'll relax specific date checking because we trust the URL filter (Past Week) 
+                        // BUT for stricter "hours" preference:
+                        // if user strictly wants very fresh, we check text. 
+                        // Assuming user implies they *want* to see "few hours ago" ones highlighted or included.
+                        // The generic isRecent function is tuned for Naukri strings ("Just Now", "Today").
+                        // Let's assume URL filter (Past Week) is good enough for now, or apply soft check.
+
+                        // Add to list
+                        job.scrapedAt = new Date().toISOString();
+                        job.category = config.category;
+                        categoryJobs.push(job);
+                        existingUrls.add(job.detailUrl);
+                        existingJobs.push(job);
+                    }
+
+                    // Pagination Control
+                    try {
+                        const nextButtonSelector = 'button[data-testid="pagination-controls-next-button-visible"], button[aria-label="Next"]';
+                        const nextBtn = await page.$(nextButtonSelector);
+
+                        if (nextBtn) {
+                            const isDisabled = await page.evaluate(el => el.disabled || el.classList.contains('disabled'), nextBtn);
+                            if (!isDisabled) {
+                                console.log('[LinkedIn] Clicking Next Page...');
+                                await Promise.all([
+                                    nextBtn.click(),
+                                    randomDelay(3000, 6000)
+                                ]);
+                            } else {
+                                console.log('[LinkedIn] Next button disabled. Stopping pagination.');
+                                break;
+                            }
+                        } else {
+                            console.log('[LinkedIn] No Next button found. Stopping pagination.');
+                            break;
+                        }
+                    } catch (navErr) {
+                        console.log('[LinkedIn] Pagination error:', navErr.message);
+                        break;
+                    }
+                } // End while loop
+
+            } catch (e) {
+                console.error(`[LinkedIn] Error scraping ${role}:`, e.message);
+            }
+        }
+    }
+}
+
+async function scrapeNaukri(page, config, existingUrls, categoryJobs, existingJobs) {
+    for (const loc of LOCATIONS) {
+        for (const role of config.roles) {
+            try {
+                console.log(`[Naukri] Searching for "${role}" in "${loc}"...`);
+
+                const formattedRole = role.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+                const formattedLoc = loc.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+                // jobAge=1
+                let url = `https://www.naukri.com/${formattedRole}-jobs-in-${formattedLoc}?experience=${EXPERIENCE_PARAM}&jobAge=1`;
+
+                await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                await randomDelay(2000, 4000);
+
+                // --- UI FILTERING (Conditional) ---
+                if (config.uiFilter) {
+                    try {
+                        await page.waitForSelector('.styles_filterContainer__4aQaD', { timeout: 3000 }).catch(() => { });
+                        const filterClicked = await page.evaluate(async (filterName) => {
+                            const labels = Array.from(document.querySelectorAll('label p span.styles_filterLabel__jRP04'));
+                            const target = labels.find(l => l.innerText.includes(filterName));
+                            if (target) {
+                                target.scrollIntoView();
+                                const labelNode = target.closest('label');
+                                labelNode.click();
+                                return true;
+                            }
+                            return false;
+                        }, 'UX, Design');
+
+                        if (filterClicked) {
+                            console.log(`Applied Filter: ${config.uiFilter}`);
+                            await randomDelay(3000, 5000);
+                        }
+                    } catch (e) {
+                        // console.log('Filter interaction skipped', e.message);
+                    }
+                }
+
+                // --- Freshness UI (Shared) ---
+                // Ensure "Last 1 Day" context for strict checks later
+                try {
+                    const freshnessBtn = await page.$('#filter-freshness');
+                    if (freshnessBtn) {
+                        const btnText = await page.evaluate(el => el.innerText, freshnessBtn);
+                        if (!btnText.includes('Last 1 day')) {
+                            await freshnessBtn.click();
+                            await page.waitForSelector('a[data-id="filter-freshness-1"]', { visible: true, timeout: 2000 });
+                            await page.click('a[data-id="filter-freshness-1"]');
+                            await randomDelay(2000, 4000);
+                        }
+                    }
+                } catch (e) { }
+
+                await page.waitForSelector('.list, .srp-jobtuple-wrapper, .jobTuple', { timeout: 10000 }).catch(() => { });
+
+                const scrapedJobs = await page.evaluate(() => {
+                    const nodes = document.querySelectorAll('.srp-jobtuple-wrapper, article.jobTuple');
+                    const data = [];
+                    nodes.forEach(node => {
+                        const titleEl = node.querySelector('.title, a[title]');
+                        const url = titleEl ? titleEl.href : null;
+                        const title = titleEl ? (titleEl.getAttribute('title') || titleEl.innerText) : 'N/A';
+                        const postedDate = node.querySelector('.job-post-day, span.fleft.postedDate')?.innerText || 'N/A';
+                        const company = node.querySelector('.comp-name, a.subTitle')?.innerText || 'N/A';
+                        const location = node.querySelector('.loc, .loc-wrap, span[title*="location"]')?.innerText || 'N/A';
+                        const experience = node.querySelector('.exp, .exp-wrap, span[title*="Exp"]')?.innerText || 'N/A';
+
+                        if (url) {
+                            data.push({ title, detailUrl: url, postedDate, company, location, experience });
+                        }
+                    });
+                    return data;
+                });
+
+                for (const job of scrapedJobs) {
+                    if (existingUrls.has(job.detailUrl)) continue;
+
+                    // Use Category-Specific Validator
+                    if (!config.validateTitle(job.title)) continue;
+
+                    // Location Validation
+                    if (!isValidLocation(job.location)) continue;
+
+                    if (isRecent(job.postedDate)) {
+                        const exp = job.experience.toLowerCase();
+                        const match = exp.match(/(\d+)-(\d+)/);
+                        let validExp = false;
+
+                        if (match) {
+                            const min = parseInt(match[1]);
+                            const max = parseInt(match[2]);
+                            if (min <= 3 && max >= 2) validExp = true;
+                        } else if (exp.includes('2 yrs') || exp.includes('3 yrs')) {
+                            validExp = true;
+                        }
+
+                        if (validExp) {
+                            job.scrapedAt = new Date().toISOString();
+                            job.category = config.category;
+                            categoryJobs.push(job);
+                            existingUrls.add(job.detailUrl);
+                            existingJobs.push(job);
+                        }
+                    }
+                }
+                await randomDelay(1000, 2000);
+            } catch (e) {
+                console.error(`Error searching ${role}:`, e.message);
+            }
+        }
+    }
 }
 
 // --- Main Scraper ---
@@ -195,12 +511,16 @@ async function runScraper() {
 
     // --- STATELESS: Load existing URLs from Sheets ---
     let existingUrls = new Set();
+    let existingJobs = []; // Fix: Initialize existingJobs
 
     // 1. Load from Local JSON (Fallback/Cache)
     if (fs.existsSync(RESULTS_FILE)) {
         try {
             const localJobs = JSON.parse(fs.readFileSync(RESULTS_FILE, 'utf8'));
-            localJobs.forEach(j => existingUrls.add(j.detailUrl));
+            localJobs.forEach(j => {
+                existingUrls.add(j.detailUrl);
+                existingJobs.push(j); // Populate existingJobs
+            });
         } catch (e) {
             console.error('Error reading jobs.json', e);
         }
@@ -228,117 +548,19 @@ async function runScraper() {
             console.log(`\n--- Processing Category: ${config.category} ---`);
             let categoryJobs = [];
 
-            for (const loc of LOCATIONS) {
-                for (const role of config.roles) {
-                    try {
-                        console.log(`Searching for "${role}" in "${loc}"...`);
+            // 1. Naukri Scrape
+            await scrapeNaukri(page, config, existingUrls, categoryJobs, existingJobs);
 
-                        const formattedRole = role.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-                        const formattedLoc = loc.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-                        // jobAge=1
-                        let url = `https://www.naukri.com/${formattedRole}-jobs-in-${formattedLoc}?experience=${EXPERIENCE_PARAM}&jobAge=1`;
-
-                        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-                        await randomDelay(2000, 4000);
-
-                        // --- UI FILTERING (Conditional) ---
-                        if (config.uiFilter) {
-                            try {
-                                await page.waitForSelector('.styles_filterContainer__4aQaD', { timeout: 3000 }).catch(() => { });
-                                const filterClicked = await page.evaluate(async (filterName) => {
-                                    const labels = Array.from(document.querySelectorAll('label p span.styles_filterLabel__jRP04'));
-                                    const target = labels.find(l => l.innerText.includes(filterName));
-                                    if (target) {
-                                        target.scrollIntoView();
-                                        const labelNode = target.closest('label');
-                                        labelNode.click();
-                                        return true;
-                                    }
-                                    return false;
-                                }, 'UX, Design');
-
-                                if (filterClicked) {
-                                    console.log(`Applied Filter: ${config.uiFilter}`);
-                                    await randomDelay(3000, 5000);
-                                }
-                            } catch (e) {
-                                // console.log('Filter interaction skipped', e.message);
-                            }
-                        }
-
-                        // --- Freshness UI (Shared) ---
-                        // Ensure "Last 1 Day" context for strict checks later
-                        try {
-                            const freshnessBtn = await page.$('#filter-freshness');
-                            if (freshnessBtn) {
-                                const btnText = await page.evaluate(el => el.innerText, freshnessBtn);
-                                if (!btnText.includes('Last 1 day')) {
-                                    await freshnessBtn.click();
-                                    await page.waitForSelector('a[data-id="filter-freshness-1"]', { visible: true, timeout: 2000 });
-                                    await page.click('a[data-id="filter-freshness-1"]');
-                                    await randomDelay(2000, 4000);
-                                }
-                            }
-                        } catch (e) { }
-
-                        await page.waitForSelector('.list, .srp-jobtuple-wrapper, .jobTuple', { timeout: 10000 }).catch(() => { });
-
-                        const scrapedJobs = await page.evaluate(() => {
-                            const nodes = document.querySelectorAll('.srp-jobtuple-wrapper, article.jobTuple');
-                            const data = [];
-                            nodes.forEach(node => {
-                                const titleEl = node.querySelector('.title, a[title]');
-                                const url = titleEl ? titleEl.href : null;
-                                const title = titleEl ? (titleEl.getAttribute('title') || titleEl.innerText) : 'N/A';
-                                const postedDate = node.querySelector('.job-post-day, span.fleft.postedDate')?.innerText || 'N/A';
-                                const company = node.querySelector('.comp-name, a.subTitle')?.innerText || 'N/A';
-                                const location = node.querySelector('.loc, .loc-wrap, span[title*="location"]')?.innerText || 'N/A';
-                                const experience = node.querySelector('.exp, .exp-wrap, span[title*="Exp"]')?.innerText || 'N/A';
-
-                                if (url) {
-                                    data.push({ title, detailUrl: url, postedDate, company, location, experience });
-                                }
-                            });
-                            return data;
-                        });
-
-                        for (const job of scrapedJobs) {
-                            if (existingUrls.has(job.detailUrl)) continue;
-
-                            // Use Category-Specific Validator
-                            if (!config.validateTitle(job.title)) continue;
-
-                            if (isRecent(job.postedDate)) {
-                                const exp = job.experience.toLowerCase();
-                                const match = exp.match(/(\d+)-(\d+)/);
-                                let validExp = false;
-
-                                if (match) {
-                                    const min = parseInt(match[1]);
-                                    const max = parseInt(match[2]);
-                                    if (min <= 3 && max >= 2) validExp = true;
-                                } else if (exp.includes('2 yrs') || exp.includes('3 yrs')) {
-                                    validExp = true;
-                                }
-
-                                if (validExp) {
-                                    job.scrapedAt = new Date().toISOString();
-                                    job.category = config.category;
-                                    categoryJobs.push(job);
-                                    existingUrls.add(job.detailUrl);
-                                    existingJobs.push(job);
-                                }
-                            }
-                        }
-                        await randomDelay(1000, 2000);
-                    } catch (e) {
-                        console.error(`Error searching ${role}:`, e.message);
-                    }
-                }
+            // 2. LinkedIn Scrape (New)
+            // Use same config (roles) but adapted for LinkedIn
+            try {
+                await scrapeLinkedIn(page, config, existingUrls, categoryJobs, existingJobs);
+            } catch (linErr) {
+                console.error('LinkedIn Scrape Failed:', linErr);
             }
 
             if (categoryJobs.length > 0) {
-                console.log(`Found ${categoryJobs.length} new ${config.category} jobs.`);
+                console.log(`Found ${categoryJobs.length} new ${config.category} jobs (Naukri + LinkedIn).`);
                 // Save to Specific Sheet
                 await appendToSheet(categoryJobs, config.sheetId);
             } else {
